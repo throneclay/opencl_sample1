@@ -59,57 +59,67 @@ typedef struct D
 	int height;
 	int paddingW;
 	int paddingH;
-	cl_mem *buffer;
+	cl_mem buffer;
 
 } imgData;
 
-int memReshape(imgData *d,float* mem, float* image, int paddingW, int paddingH,
+int memReshape(imgData *dst, const imgData *src, int paddingW, int paddingH,
 		cl_command_queue queue, cl_context context)
 {
+	
 	cl_int err;
 	printf("paddingW = %d, paddingH = %d\n", paddingW,paddingH);
 	
-	size_t buffer_origin[3]={
+	size_t dst_origin[3]={
 			paddingW*sizeof(float),
 			paddingH,
 			0};
 
-	size_t host_origin[3]={0,
+	size_t src_origin[3]={0,
 			0,
 			0};
 
-	size_t region[3]={d->width*sizeof(float),
-			d->width,
+	size_t region[3]={src->width*sizeof(float),
+			src->height,
 			CHANNEL};
 
-	size_t buffer_row_pitch= sizeof(float)*((d->width) + 2*paddingW );
-	size_t buffer_slice_pitch=(d->width+2*paddingW)*(d->height+2*paddingH)*sizeof(float);
+	size_t dst_row_pitch = sizeof(float)*((src->width) + 2*paddingW );
+	size_t dst_slice_pitch=sizeof(float)*(src->width+2*paddingW)*(src->height+2*paddingH);
 
-	size_t host_row_pitch=d->width*sizeof(float);
-	size_t host_slice_pitch=(d->width)*(d->height)*sizeof(float);
+	size_t src_row_pitch=src->width*sizeof(float);
+	size_t src_slice_pitch=(src->width)*(src->height)*sizeof(float);
 
-	*(d->buffer) = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, 
-			sizeof(float)
-			* (WIDTH+2*paddingW)
-			* (HEIGHT+2*paddingH)
-			* CHANNEL, mem, &err);
-
-	clEnqueueWriteBufferRect(
+	clEnqueueCopyBufferRect(
 					queue,
-					*(d->buffer),
-					CL_TRUE,
-					buffer_origin,
-					host_origin,
+					(src->buffer),
+					(dst->buffer),
+					src_origin,
+					dst_origin,
 					region,
-					buffer_row_pitch,
-					buffer_slice_pitch,
-					host_row_pitch,
-					host_slice_pitch,
-					image,
-					0,NULL, NULL);
+					src_row_pitch,
+					src_slice_pitch,
+					dst_row_pitch,
+					dst_slice_pitch,
+					0,NULL,NULL);
+	
+
+	// clEnqueueWriteBufferRect(
+	// 				queue,
+	// 				*(d->buffer),
+	// 				CL_TRUE,
+	// 				buffer_origin,
+	// 				host_origin,
+	// 				region,
+	// 				buffer_row_pitch,
+	// 				buffer_slice_pitch,
+	// 				host_row_pitch,
+	// 				host_slice_pitch,
+	// 				image,
+	// 				0,NULL, NULL);
+	
 	clFinish(queue);
-	d->paddingW = paddingW;
-	d->paddingH = paddingH;
+	dst->paddingW = paddingW;
+	dst->paddingH = paddingH;
 
 }
 
@@ -131,7 +141,6 @@ double callKernel(float*images, float* filter, float*result,
 	char options[256] = "";
 
 	cl_kernel kernel;
-	cl_mem images_buff;
 
 	#if PRINT
 	//writeFile(d, W, H, "d.csv");
@@ -177,24 +186,37 @@ double callKernel(float*images, float* filter, float*result,
 	queue = clCreateCommandQueue(context, device, 0, &err);
 
 	// program start
-	
-	imgData d;
-	d.width = WIDTH;
-	d.height = HEIGHT;
-	d.paddingW = 0;
-	d.paddingH = 0;
-	d.buffer = &images_buff;
+	int padding_w = 1;
+	int padding_h = 1;
+
+	imgData src;
+	src.width = WIDTH;
+	src.height = HEIGHT;
+	src.paddingW = 0;
+	src.paddingH = 0;
+	src.buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+			sizeof(float) * (WIDTH) * (HEIGHT) * CHANNEL,
+			images, &err);
 
 	float* mem = (float*)_mm_malloc(sizeof(float)*(WIDTH+6)*(HEIGHT+6)*CHANNEL,64);
 	memset(mem, 0, sizeof(float)*(WIDTH+6)*(HEIGHT+6)*CHANNEL);
+	imgData dst;
+	dst.width = WIDTH;
+	dst.height = HEIGHT;
+	dst.paddingW = 0;
+	dst.paddingH = 0;
+	dst.buffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, 
+			sizeof(float) * (WIDTH+2*padding_w) * (HEIGHT+2*padding_h) * CHANNEL,
+			mem, &err);
+
 	st = second();
 
-	memReshape(&d, mem,images, 2, 2, queue, context);
+	memReshape(&dst, &src, padding_w, padding_h, queue, context);
 
-	// int W = d.width+d.paddingW*2;
-	// int H = d.height+d.paddingH*2;
+	// int W = dst.width+dst.paddingW*2;
+	// int H = dst.height+dst.paddingH*2;
 
-	// clSetKernelArg(kernel, 0, sizeof(cl_mem), d.buffer);
+	// clSetKernelArg(kernel, 0, sizeof(cl_mem), &(dst.buffer));
 	// clSetKernelArg(kernel, 1, sizeof(int), &W);
 	// clSetKernelArg(kernel, 2, sizeof(int), &H);
 	
@@ -204,11 +226,12 @@ double callKernel(float*images, float* filter, float*result,
 	// clEnqueueNDRangeKernel(queue, kernel, 1, NULL, 
 	// 			&global_work_size, &local_work_size, 0, NULL, NULL);
 
-	clFinish(queue);
+	// clFinish(queue);
 	
 	et = second();
+	clReleaseMemObject(src.buffer);
+	clReleaseMemObject(dst.buffer);
 	_mm_free(mem);
-	clReleaseMemObject(*(d.buffer));
 	clReleaseKernel(kernel);
 	clReleaseCommandQueue(queue);
 	clReleaseProgram(program);
